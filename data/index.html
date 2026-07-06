@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Filament Winder</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 420px; margin: 20px auto; padding: 0 16px; background:#111; color:#eee; }
+  h1 { font-size: 1.2rem; }
+  .card { background:#1c1c1c; border-radius:10px; padding:16px; margin-bottom:16px; }
+  label { display:block; margin:10px 0 4px; font-size:.9rem; color:#aaa; }
+  input { width:100%; box-sizing:border-box; padding:8px; border-radius:6px; border:1px solid #333; background:#222; color:#eee; }
+  button { padding:10px 14px; margin-right:8px; margin-top:10px; border:none; border-radius:6px; font-size:1rem; cursor:pointer; }
+  .start { background:#2e7d32; color:#fff; }
+  .stop { background:#c62828; color:#fff; }
+  .reset { background:#555; color:#fff; }
+  .status { font-size:1.1rem; margin-bottom:6px; }
+  .bar { height:14px; background:#333; border-radius:7px; overflow:hidden; margin-top:6px; }
+  .bar > div { height:100%; background:#2e7d32; width:0%; transition: width .3s; }
+  .err { color:#ff5252; }
+</style>
+</head>
+<body>
+  <h1>Filament Winder</h1>
+
+  <div class="card">
+    <div class="status">State: <b id="state">-</b></div>
+    <div id="length">0 / 0 mm</div>
+    <div class="bar"><div id="progress"></div></div>
+    <div id="flags"></div>
+    <button class="start" onclick="post('/api/start')">Start</button>
+    <button class="stop" onclick="post('/api/stop')">Stop</button>
+    <button class="reset" onclick="post('/api/reset')">Reset</button>
+    <button class="stop" id="jogBtn">Jog (hold)</button>
+  </div>
+
+  <div class="card">
+    <label>Filament diameter (mm)</label>
+    <input id="filamentDiameterMm" type="number" step="0.01">
+    <label>Target length (mm)</label>
+    <input id="targetLengthMm" type="number" step="1">
+    <div id="dcMotorField" style="display:none">
+      <label>Spindle sensor pulses/rev (DC motor drive)</label>
+      <input id="spindleEncoderPulsesPerRev" type="number" step="1" min="1">
+    </div>
+    <button class="start" onclick="saveConfig()">Save config</button>
+  </div>
+
+  <div class="card">
+    <label>Target length presets (mm, comma-separated - shown in the on-device menu)</label>
+    <input id="lengthPresets" type="text">
+    <button class="start" onclick="savePresets()">Save presets</button>
+  </div>
+
+<script>
+async function post(url, body) {
+  await fetch(url, { method: 'POST', headers: body ? {'Content-Type':'application/json'} : {}, body: body ? JSON.stringify(body) : undefined });
+  refresh();
+}
+function saveConfig() {
+  post('/api/config', {
+    filamentDiameterMm: parseFloat(document.getElementById('filamentDiameterMm').value),
+    targetLengthMm: parseFloat(document.getElementById('targetLengthMm').value),
+    spindleEncoderPulsesPerRev: parseInt(document.getElementById('spindleEncoderPulsesPerRev').value, 10),
+  });
+}
+let inputsTouched = false;
+['filamentDiameterMm','targetLengthMm','spindleEncoderPulsesPerRev'].forEach(id => {
+  document.getElementById(id).addEventListener('focus', () => inputsTouched = true);
+  document.getElementById(id).addEventListener('blur', () => inputsTouched = false);
+});
+async function refresh() {
+  const r = await fetch('/api/status');
+  const s = await r.json();
+  document.getElementById('state').textContent = s.state;
+  document.getElementById('length').textContent = `${s.lengthMm.toFixed(0)} / ${s.targetLengthMm.toFixed(0)} mm`;
+  document.getElementById('progress').style.width = s.progressPct + '%';
+  document.getElementById('flags').innerHTML = [
+    s.runout ? '<span class="err">RUNOUT</span>' : '',
+    s.stalled ? '<span class="err">JAM</span>' : '',
+  ].filter(Boolean).join(' ');
+  document.getElementById('dcMotorField').style.display = s.spindleDriveIsDcMotor ? 'block' : 'none';
+  if (!inputsTouched) {
+    document.getElementById('filamentDiameterMm').value = s.filamentDiameterMm;
+    document.getElementById('targetLengthMm').value = s.targetLengthMm;
+    document.getElementById('spindleEncoderPulsesPerRev').value = s.spindleEncoderPulsesPerRev;
+  }
+}
+let presetsTouched = false;
+document.getElementById('lengthPresets').addEventListener('focus', () => presetsTouched = true);
+document.getElementById('lengthPresets').addEventListener('blur', () => presetsTouched = false);
+async function loadPresets() {
+  if (presetsTouched) return;
+  const r = await fetch('/api/presets');
+  const p = await r.json();
+  document.getElementById('lengthPresets').value = p.targetLengthsMm.join(',');
+}
+function savePresets() {
+  post('/api/presets', {
+    targetLengthsMm: document.getElementById('lengthPresets').value.split(',').map(Number).filter(n => !isNaN(n)),
+  }).then(loadPresets);
+}
+let jogHeartbeat = null;
+function jogStart() {
+  if (jogHeartbeat) return;
+  fetch('/api/jog/start', { method: 'POST' });
+  jogHeartbeat = setInterval(() => fetch('/api/jog/start', { method: 'POST' }), 300);
+}
+function jogStop() {
+  clearInterval(jogHeartbeat);
+  jogHeartbeat = null;
+  fetch('/api/jog/stop', { method: 'POST' });
+}
+const jogBtn = document.getElementById('jogBtn');
+['mousedown', 'touchstart'].forEach(ev => jogBtn.addEventListener(ev, e => { e.preventDefault(); jogStart(); }));
+['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(ev => jogBtn.addEventListener(ev, jogStop));
+
+refresh();
+loadPresets();
+setInterval(refresh, 1000);
+setInterval(loadPresets, 5000);
+</script>
+</body>
+</html>
